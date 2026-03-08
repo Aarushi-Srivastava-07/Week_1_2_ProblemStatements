@@ -1,82 +1,88 @@
 import java.util.*;
-import java.util.concurrent.*;
 
 public class Week_1_2_Problems {
+    private static final int N = 5;
+    private final Map<String, Set<Integer>> index = new HashMap<>();
+    private final Map<Integer, List<String>> docNGrams = new HashMap<>();
 
-    private final ConcurrentHashMap<String, Product> products = new ConcurrentHashMap<>();
-
-    private static class Product {
-        private final String id;
-        private int stock;
-        private final Queue<String> waitingList;
-
-        Product(String id, int initialStock) {
-            this.id = id;
-            this.stock = initialStock;
-            this.waitingList = new LinkedList<>();
+    public void addDocument(int docId, String text) {
+        List<String> ngrams = extractNGrams(text);
+        docNGrams.put(docId, ngrams);
+        for (String ng : ngrams) {
+            index.computeIfAbsent(ng, k -> new HashSet<>()).add(docId);
         }
+    }
 
-        synchronized int getStock() {
-            return stock;
-        }
-
-        synchronized int purchase(String userId) {
-            if (stock > 0) {
-                stock--;
-                return stock;
-            } else {
-                waitingList.add(userId);
-                return -waitingList.size();
+    private List<String> extractNGrams(String text) {
+        String[] words = text.toLowerCase().split("\\s+");
+        List<String> ngrams = new ArrayList<>();
+        if (words.length < N) return ngrams;
+        for (int i = 0; i <= words.length - N; i++) {
+            StringBuilder sb = new StringBuilder();
+            for (int j = 0; j < N; j++) {
+                if (j > 0) sb.append(' ');
+                sb.append(words[i + j]);
             }
+            ngrams.add(sb.toString());
         }
+        return ngrams;
     }
 
-    public void addProduct(String productId, int initialStock) {
-        products.putIfAbsent(productId, new Product(productId, initialStock));
-    }
+    public Map<Integer, Double> analyzeDocument(String text) {
+        List<String> queryNGrams = extractNGrams(text);
+        int total = queryNGrams.size();
+        if (total == 0) return Collections.emptyMap();
 
-    public int checkStock(String productId) {
-        Product p = products.get(productId);
-        if (p == null) throw new IllegalArgumentException("Product not found: " + productId);
-        return p.getStock();
-    }
-
-    public String purchaseItem(String productId, String userId) {
-        Product p = products.get(productId);
-        if (p == null) return "Error: Product " + productId + " not found.";
-        int result = p.purchase(userId);
-        if (result >= 0) return "Success, " + result + " units remaining";
-        else return "Added to waiting list, position #" + (-result);
-    }
-
-    public static void main(String[] args) throws InterruptedException, ExecutionException {
-        Week_1_2_Problems manager = new Week_1_2_Problems();
-        String productId = "IPHONE15_256GB";
-        manager.addProduct(productId, 100);
-
-        int totalUsers = 50_000;
-        ExecutorService executor = Executors.newFixedThreadPool(200);
-        List<Future<String>> results = new ArrayList<>();
-
-        for (int i = 1; i <= totalUsers; i++) {
-            String userId = "user" + i;
-            results.add(executor.submit(() -> manager.purchaseItem(productId, userId)));
-        }
-
-        executor.shutdown();
-        executor.awaitTermination(1, TimeUnit.MINUTES);
-
-        int success = 0, waiting = 0, maxPos = 0;
-        for (Future<String> f : results) {
-            String msg = f.get();
-            if (msg.startsWith("Success")) success++;
-            else {
-                waiting++;
-                int pos = Integer.parseInt(msg.replaceAll("\\D+", ""));
-                if (pos > maxPos) maxPos = pos;
+        Map<Integer, Integer> matchCount = new HashMap<>();
+        for (String ng : queryNGrams) {
+            Set<Integer> docs = index.get(ng);
+            if (docs != null) {
+                for (int docId : docs) {
+                    matchCount.merge(docId, 1, Integer::sum);
+                }
             }
         }
 
-        System.out.println("Purchases: " + success + ", Waiting: " + waiting + ", Final stock: " + manager.checkStock(productId) + ", Max waiting pos: " + maxPos);
+        Map<Integer, Double> similarity = new HashMap<>();
+        for (Map.Entry<Integer, Integer> e : matchCount.entrySet()) {
+            similarity.put(e.getKey(), e.getValue() * 100.0 / total);
+        }
+        return similarity;
+    }
+
+    public void printAnalysis(String documentName, String text) {
+        System.out.println("analyzeDocument(\"" + documentName + "\")");
+        int total = extractNGrams(text).size();
+        System.out.println("-> Extracted " + total + " n-grams");
+        Map<Integer, Double> results = analyzeDocument(text);
+        if (results.isEmpty()) {
+            System.out.println("-> No matches found.");
+            return;
+        }
+        results.entrySet().stream()
+                .sorted(Map.Entry.<Integer, Double>comparingByValue().reversed())
+                .forEach(e -> {
+                    int docId = e.getKey();
+                    double sim = e.getValue();
+                    int matches = (int) Math.round(sim * total / 100);
+                    String tag = sim > 50 ? "PLAGIARISM DETECTED" : (sim > 20 ? "suspicious" : "low");
+                    System.out.printf("-> Found %d matching n-grams with \"essay_%03d.txt\"\n", matches, docId);
+                    System.out.printf("-> Similarity: %.1f%% (%s)\n", sim, tag);
+                });
+    }
+
+    public static void main(String[] args) {
+        Week_1_2_Problems detector = new Week_1_2_Problems();
+
+        detector.addDocument(89, "The quick brown fox jumps over the lazy dog. The quick brown fox is quick.");
+        detector.addDocument(92, "Plagiarism is the act of using someone else's work without permission. It is unethical and often illegal. Students should avoid plagiarism at all costs.");
+        detector.addDocument(45, "This is a unique essay about Java programming. Java is a popular language for enterprise applications.");
+
+        String newEssay = "The quick brown fox jumps over the lazy dog. The quick brown fox is indeed quick. Plagiarism is wrong and should be avoided.";
+        detector.printAnalysis("essay_123.txt", newEssay);
+
+        System.out.println("\n--- Additional check ---");
+        String anotherEssay = "Java is used in many enterprise applications. It is a popular language.";
+        detector.printAnalysis("essay_456.txt", anotherEssay);
     }
 }
